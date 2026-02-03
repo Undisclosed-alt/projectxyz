@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Reverse CAPTCHA Demo</title>
+  <style>
+    body {
+      font-family: "Segoe UI", sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      margin: 0;
+      padding: 2rem;
+    }
+    main {
+      max-width: 760px;
+      margin: 0 auto;
+      background: #111827;
+      border-radius: 16px;
+      padding: 2rem;
+      box-shadow: 0 12px 30px rgba(15, 23, 42, 0.4);
+    }
+    h1 {
+      margin-top: 0;
+    }
+    button {
+      background: #38bdf8;
+      color: #0f172a;
+      border: none;
+      padding: 0.8rem 1.4rem;
+      font-size: 1rem;
+      border-radius: 999px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .panel {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+      margin-top: 1.5rem;
+    }
+    .card {
+      background: #1f2937;
+      padding: 1rem;
+      border-radius: 12px;
+    }
+    .ops {
+      font-size: 1.2rem;
+      min-height: 4rem;
+      letter-spacing: 0.05em;
+    }
+    .status {
+      font-weight: 600;
+    }
+    .badge {
+      display: inline-block;
+      padding: 0.2rem 0.6rem;
+      border-radius: 999px;
+      background: #0ea5e9;
+      color: #0f172a;
+      font-size: 0.8rem;
+      margin-left: 0.5rem;
+    }
+    .log {
+      font-family: "Fira Code", monospace;
+      font-size: 0.85rem;
+      line-height: 1.5;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .hint {
+      color: #94a3b8;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Reverse CAPTCHA (Bot-Friendly)</h1>
+    <p>
+      This demo streams rapid arithmetic operations. A bot can keep the running
+      total and respond before the short window expires.
+    </p>
+    <button id="start">Start Challenge</button>
+
+    <section class="panel">
+      <div class="card">
+        <h3>Live Operations</h3>
+        <div class="ops" id="ops"></div>
+        <p class="hint">Response window is &lt; 800 ms per operation.</p>
+      </div>
+      <div class="card">
+        <h3>Status</h3>
+        <p class="status" id="status">Idle</p>
+        <p>Current total: <strong id="total">0</strong></p>
+        <p>Last seq: <strong id="seq">0</strong></p>
+        <p>Token: <span id="token">-</span></p>
+      </div>
+      <div class="card">
+        <h3>Server Log</h3>
+        <div class="log" id="log"></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const startButton = document.getElementById("start");
+    const opsEl = document.getElementById("ops");
+    const statusEl = document.getElementById("status");
+    const totalEl = document.getElementById("total");
+    const seqEl = document.getElementById("seq");
+    const tokenEl = document.getElementById("token");
+    const logEl = document.getElementById("log");
+
+    let eventSource;
+    let currentTotal = 0;
+    let currentSeq = 0;
+    let token = "";
+    let solveUrl = "";
+
+    const appendLog = (message) => {
+      const entry = document.createElement("div");
+      entry.textContent = message;
+      logEl.prepend(entry);
+    };
+
+    const resetState = () => {
+      opsEl.textContent = "";
+      currentTotal = 0;
+      currentSeq = 0;
+      totalEl.textContent = "0";
+      seqEl.textContent = "0";
+      statusEl.textContent = "Streaming";
+    };
+
+    const solve = async () => {
+      if (!token) {
+        return;
+      }
+
+      try {
+        const response = await fetch(solveUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            token,
+            lastSeq: currentSeq,
+            total: currentTotal,
+            clientTs: Date.now()
+          })
+        });
+        const data = await response.json();
+        if (data.ok) {
+          statusEl.textContent = "Solved ✅";
+        } else {
+          statusEl.textContent = `Failed (${data.reason})`;
+        }
+        appendLog(`solve: ${JSON.stringify(data)}`);
+      } catch (error) {
+        statusEl.textContent = "Solve error";
+        appendLog(`solve error: ${error.message}`);
+      }
+    };
+
+    startButton.addEventListener("click", async () => {
+      startButton.disabled = true;
+      statusEl.textContent = "Starting...";
+
+      try {
+        const response = await fetch("/captcha/start", { method: "POST" });
+        const data = await response.json();
+        token = data.token;
+        tokenEl.textContent = `${token.slice(0, 8)}...`;
+        solveUrl = data.solveUrl;
+
+        if (eventSource) {
+          eventSource.close();
+        }
+
+        resetState();
+        eventSource = new EventSource(data.streamUrl);
+
+        eventSource.onmessage = (event) => {
+          const payload = JSON.parse(event.data);
+          const opSymbol = payload.op === "+" ? "＋" : "－";
+          currentSeq = payload.seq;
+          currentTotal = payload.op === "+"
+            ? currentTotal + payload.value
+            : currentTotal - payload.value;
+
+          opsEl.textContent = `${opSymbol}${payload.value} ` + opsEl.textContent;
+          totalEl.textContent = currentTotal;
+          seqEl.textContent = currentSeq;
+
+          appendLog(`op ${payload.seq} ${payload.op}${payload.value}`);
+        };
+
+        eventSource.addEventListener("done", () => {
+          appendLog("stream done");
+          solve();
+          eventSource.close();
+          startButton.disabled = false;
+        });
+      } catch (error) {
+        statusEl.textContent = "Start error";
+        appendLog(`start error: ${error.message}`);
+        startButton.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

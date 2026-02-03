@@ -1,0 +1,13 @@
+{
+  "name": "reverse-captcha",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Reverse captcha demo (bot-friendly math stream)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
